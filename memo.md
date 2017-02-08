@@ -155,3 +155,95 @@ public class APIResponse<T> implements Serializable {
         return StringUtils.equals(this.returnCode, SUCCESS_RESPONSE.getReturnCode());
     }
 ```
+
+**3. 泛型类：** BizTemplate<T> 业务处理模板
+
+``` JAVA
+/**
+ * Created by hongzong.li on 7/12/16.
+ * 业务处理模板：所有的业务处理逻辑使用的共同模板。包括校验,逻辑处理,结果处理，处理反馈(回调等)
+ */
+public abstract class BizTemplate<T> {
+    protected Logger logger = LogManager.getLogger(getClass());
+
+    private final String monitorKey; // 定义成员变量-监控项目的引用
+
+    private static final String ERROR_POSTFIX = "_error";
+
+    protected abstract void checkParams(); // 抽象方法定义校验过程,具体业务实例必须实现
+
+    protected abstract T process() throws BizException; // 抽象方法定义逻辑处理过程,具体业务实例必须实现.过程中出现的问题作为业务异常抛出
+
+    protected void postProcess() {  // 普通方法定义处理反馈,不是必须实现
+    }
+
+    protected void onSuccess() { // 普通方法定义成功结果处理,不是必须实现
+    }
+
+    protected void onFailure() { // 普通方法定义成功失败处理,不是必须实现
+    }
+
+    public BizTemplate() {
+        this(null); // 需要在每个构造器内给final成员变量初始化
+    }
+
+    public BizTemplate(String monitorKey) {
+        this.monitorKey = monitorKey; // 需要在每个构造器内给final成员变量初始化
+    }
+
+    public T execute() throws BizException { // 执行业务处理逻辑
+        long timeStart = System.currentTimeMillis(); // 开始记录业务处理时长
+        boolean exceptional = true;
+        try { // 定义业务处理逻辑,捕获过程中出现的异常并分情况处理
+            checkParams();
+            T result = process();
+            onSuccess();
+            exceptional = false;
+            return result;
+        } catch (IllegalArgumentException e) {
+            logger.warn("Illegal argument exception", e);
+            onFailure();
+            throw new BizException(ErrorCodes.PARAM_ERROR.withErrorMsg(e.getMessage()));
+        } catch (ValidateException e) {
+            logger.warn("Validate exception", e);
+            onFailure();
+            if (e.getErrorCode() != null) {
+                throw new BizException(e.getErrorCode());
+            }
+            throw new BizException(e);
+        } catch (UncheckedServiceException e) {
+            logger.error("Service exception", e);
+            onFailure();
+            if (e.getErrorCode() != null) {
+                throw new BizException(e.getErrorCode(), e);
+            }
+            throw new BizException(e);
+        } catch (BizException e) {
+            onFailure();
+            logger.error("Biz exception", e);
+            throw e;
+        } catch (Throwable e) {
+            logger.error("Unexpected exception", e);
+            onFailure();
+            throw new BizException(ErrorCodes.INTERNAL_ERROR, e);
+        } finally { // 在try的return执行之前进行监控记录和处理反馈的操作
+            recordMonitorIfNecessary(monitorKey, exceptional, System.currentTimeMillis() - timeStart);
+            postProcess();
+        }
+    }
+
+    private void recordMonitorIfNecessary(String monitorKey, boolean exceptional, long duration) {
+        if (StringUtils.isEmpty(monitorKey)) {
+            return;
+        }
+
+        GMonitor monitor = MonitorUtils.getInstance();
+        if (exceptional) {
+            monitor.mark(monitorKey + ERROR_POSTFIX); // 记录异常时监控指标
+        } else {
+            monitor.timing(monitorKey, duration); // 记录业务正常处理结束需要时长
+        }
+    }
+
+}
+```
